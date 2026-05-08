@@ -1,0 +1,5 @@
+.env
+Building Multi-Agent AI system for Hotel Reservations
+__pycache__
+logs/
+Notebooks/
