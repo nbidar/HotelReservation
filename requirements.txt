@@ -16,3 +16,7 @@ pandas
 textblob
 nltk
 
+# Streamlit Cloud fix: chromadb -> opentelemetry proto stack can pull protobuf>=4,
+# which breaks with some generated OTLP/proto modules. Pin protobuf to v3.x.
+protobuf<4
+

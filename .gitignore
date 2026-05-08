@@ -1,4 +1,5 @@
 .env
+/.streamlit/secrets.toml
 Building Multi-Agent AI system for Hotel Reservations
 __pycache__
 logs/
