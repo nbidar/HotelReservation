@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import sys
 import uuid
 from dataclasses import replace
+from pathlib import Path
 
 import streamlit as st
 
-from ui.chat_ui import append_assistant_message, append_user_message, render_chat_history, render_message
-from ui.components import hero_header, inject_css
-from ui.sidebar import render_sidebar
+_ROOT = Path(__file__).resolve().parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from hotel_ui.chat_ui import append_assistant_message, append_user_message, render_chat_history, render_message
+from hotel_ui.components import hero_header, inject_css
+from hotel_ui.sidebar import render_sidebar
 from utils.config import Settings, load_settings
 from utils.logger import setup_logger
 from workflows.graph import build_graph
