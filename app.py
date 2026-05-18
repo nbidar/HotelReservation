@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import streamlit as st
 
-from ui.chat_ui import append_assistant_message, append_user_message, render_chat_history
+from ui.chat_ui import append_assistant_message, append_user_message, render_chat_history, render_message
 from ui.components import hero_header, inject_css
 from ui.sidebar import render_sidebar
 from utils.config import Settings, load_settings
@@ -27,6 +27,7 @@ def _ensure_session():
     st.session_state.setdefault("agent_activity", [])
     st.session_state.setdefault("session_history", [])
     st.session_state.setdefault("last_panels", {})
+    st.session_state.setdefault("booking_context", {})
     st.session_state.setdefault("language", "en")
 
 
@@ -44,14 +45,19 @@ def main():
     _ensure_session()
 
     # Load env config
+    config_error: str | None = None
     try:
         settings = load_settings()
         api_ok = True
-    except Exception:
+    except Exception as exc:
         settings = None
         api_ok = False
+        config_error = str(exc)
 
     sidebar = render_sidebar(api_key_ok=api_ok)
+
+    if config_error:
+        st.error(config_error)
 
     if sidebar["new_thread"]:
         st.session_state["session_history"].append(st.session_state["thread_id"])
@@ -59,12 +65,14 @@ def main():
         st.session_state["chat_messages"] = []
         st.session_state["agent_activity"] = []
         st.session_state["last_panels"] = {}
+        st.session_state["booking_context"] = {}
         st.rerun()
 
     if sidebar["clear"]:
         st.session_state["chat_messages"] = []
         st.session_state["agent_activity"] = []
         st.session_state["last_panels"] = {}
+        st.session_state["booking_context"] = {}
         st.rerun()
 
     hero_header(
@@ -82,6 +90,7 @@ def main():
 
         if user_text:
             append_user_message(user_text)
+            render_message(st.session_state["chat_messages"][-1])
             with st.chat_message("assistant"):
                 placeholder = st.empty()
                 placeholder.markdown(
@@ -93,27 +102,44 @@ def main():
                 )
 
             if not settings:
-                append_assistant_message("Missing `OPENAI_API_KEY`. Copy `.env.example` to `.env` and set the key.")
+                msg = config_error or "Missing `OPENAI_API_KEY`. Copy `.env.example` to `.env` and set your key."
+                append_assistant_message(msg)
                 st.rerun()
 
             graph, logger = _graph_cached(settings, sidebar["model"], sidebar["temperature"])
 
-            # Run LangGraph with memory thread_id
-            events = graph.stream(
-                {"messages": st.session_state["chat_messages"], "confidence": 100},
-                config={"thread_id": st.session_state["thread_id"]},
-                stream_mode="values",
-            )
-
             final_text = None
             last_state = None
-            for event in events:
-                last_state = event
-                last_msg = event["messages"][-1]
-                last_agent = event.get("last_active_agent")
-                if last_agent:
-                    st.session_state["agent_activity"].append(last_agent)
-                final_text = getattr(last_msg, "content", None)
+            try:
+                # New message only; booking_context mirrored in session (checkpoint may not restore it).
+                graph_input: dict = {
+                    "messages": [st.session_state["chat_messages"][-1]],
+                    "confidence": 100,
+                }
+                if st.session_state.get("booking_context"):
+                    graph_input["booking_context"] = st.session_state["booking_context"]
+                events = graph.stream(
+                    graph_input,
+                    config={"configurable": {"thread_id": st.session_state["thread_id"]}},
+                    stream_mode="values",
+                )
+                for event in events:
+                    last_state = event
+                    last_msg = event["messages"][-1]
+                    last_agent = event.get("last_active_agent")
+                    if last_agent:
+                        st.session_state["agent_activity"].append(last_agent)
+                    final_text = getattr(last_msg, "content", None)
+            except Exception as exc:
+                err_name = type(exc).__name__
+                if err_name == "AuthenticationError" or "invalid_api_key" in str(exc).lower():
+                    append_assistant_message(
+                        "OpenAI rejected the API key (401). Update `OPENAI_API_KEY` in `.env` with a valid "
+                        "key from https://platform.openai.com/account/api-keys, then restart Streamlit."
+                    )
+                else:
+                    append_assistant_message(f"Something went wrong while processing your message: {exc}")
+                st.rerun()
 
             if final_text:
                 append_assistant_message(final_text)
@@ -122,12 +148,16 @@ def main():
 
             if last_state:
                 tool_msgs = _extract_tool_messages(last_state.get("messages", []))
+                if last_state.get("booking_context") is not None:
+                    st.session_state["booking_context"] = last_state["booking_context"]
                 st.session_state["last_panels"] = {
                     "sentiment": last_state.get("sentiment", st.session_state.get("last_panels", {}).get("sentiment", "—")),
                     "language": "en",
                     "last_active_agent": last_state.get("last_active_agent", "—"),
                     "tool_messages": tool_msgs,
                     "rag_artifact": last_state.get("rag_artifact"),
+                    "booking_artifact": last_state.get("sql_artifact"),
+                    "booking_context": st.session_state.get("booking_context"),
                 }
 
             st.rerun()
@@ -136,8 +166,11 @@ def main():
         st.markdown("### Reservation")
         st.caption("SQL tool outputs and booking-related results.")
         tool_msgs = st.session_state.get("last_panels", {}).get("tool_messages", [])
+        booking_artifact = st.session_state.get("last_panels", {}).get("booking_artifact")
         sql_msgs = [m for m in tool_msgs if (m.get("name") or "").startswith("sql_db_")]
-        if not sql_msgs:
+        if booking_artifact:
+            st.json(booking_artifact)
+        elif not sql_msgs:
             st.markdown(
                 """
 <div class="glass glow-border" style="padding: 16px 16px;">

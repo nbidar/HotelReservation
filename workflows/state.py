@@ -17,6 +17,9 @@ class AppState(TypedDict, total=False):
     sentiment: str
     language: str  # kept for UI; English-only uses "en"
 
+    # Reservation flow (deterministic booking + LLM extraction)
+    booking_context: dict[str, Any]
+
     # Tool/agent artifacts for UI
     sql_artifact: Any
     rag_artifact: Any

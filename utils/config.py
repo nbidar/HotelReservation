@@ -6,6 +6,32 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PLACEHOLDER_API_KEYS = frozenset(
+    {
+        "replace_me",
+        "your-api-key-here",
+        "your_openai_api_key",
+        "sk-your-key-here",
+        "changeme",
+    }
+)
+
+
+def _validate_openai_api_key(key: str) -> None:
+    lowered = key.strip().lower()
+    if lowered in _PLACEHOLDER_API_KEYS:
+        raise RuntimeError(
+            "OPENAI_API_KEY is still a placeholder (e.g. REPLACE_ME). "
+            "Edit `.env` in the project root and set a real key from "
+            "https://platform.openai.com/account/api-keys"
+        )
+    if not key.startswith("sk-"):
+        raise RuntimeError(
+            "OPENAI_API_KEY does not look valid (expected to start with `sk-`). "
+            "Check `.env` in the project root."
+        )
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -27,11 +53,15 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
     """
     Loads configuration from environment variables.
     """
-    load_dotenv(dotenv_path=env_file, override=False)
+    dotenv_path = Path(env_file) if env_file else _PROJECT_ROOT / ".env"
+    load_dotenv(dotenv_path=dotenv_path, override=True)
 
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not openai_api_key:
-        raise RuntimeError("Missing OPENAI_API_KEY. Add it to .env")
+        raise RuntimeError(
+            f"Missing OPENAI_API_KEY. Create `{dotenv_path}` (see `.env.example`) and set your key."
+        )
+    _validate_openai_api_key(openai_api_key)
 
     tavily_api_key = os.getenv("TAVILY_API_KEY")
     tavily_api_key = tavily_api_key.strip() if tavily_api_key else None

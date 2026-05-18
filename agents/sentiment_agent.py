@@ -22,7 +22,11 @@ def get_sentiment(query: str) -> str:
     except MissingCorpusError:
         sentiment_2 = None
 
-    if (sentiment_1 < -0.3) or ((sentiment_2 is not None) and (sentiment_2 > 0.6)):
+    # Pattern polarity is the primary signal. NaiveBayes alone mislabels neutral
+    # booking requests (e.g. "book a Deluxe room") as strongly negative.
+    if sentiment_1 < -0.3:
+        return "Negative"
+    if sentiment_2 is not None and sentiment_2 > 0.85 and sentiment_1 < 0.0:
         return "Negative"
     return "Positive"
 
@@ -39,7 +43,16 @@ def sentiment_node(state: AppState, llm_with_sentiment_tools) -> AppState:
 
     out = llm_with_sentiment_tools.invoke([sys_msg] + messages)
 
-    # The tool result is emitted as an AI message; UI can also read `state["sentiment"]`
-    state["sentiment"] = str(getattr(out, "content", "")).strip()
-    return {"messages": [out], "confidence": state.get("confidence", 100), "sentiment": state.get("sentiment", "")}
+    # Prefer deterministic tool output for UI (LLM content is often empty when tools are called).
+    last_human = ""
+    for message in reversed(messages):
+        if getattr(message, "type", None) in ("human", "user") or isinstance(message, HumanMessage):
+            last_human = (getattr(message, "content", None) or "").strip()
+            if last_human:
+                break
+    sentiment = get_sentiment.invoke({"query": last_human}) if last_human else "Positive"
+    if not sentiment and getattr(out, "content", None):
+        sentiment = str(out.content).strip()
+
+    return {"messages": [out], "confidence": state.get("confidence", 100), "sentiment": sentiment}
 
