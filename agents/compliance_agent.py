@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import tool
 
 from rag.retriever import similarity_search
@@ -21,10 +21,28 @@ def compliance_node(state: AppState, llm_with_rag_tools, rules_text: str) -> App
     """
     Compliance / RAG agent (ported from Agent3 + later notebooks).
     """
+    decision = state.get("route_decision") or {}
+    if decision.get("reason") == "guest_privacy_request":
+        refusal = AIMessage(
+            content="I can’t share information about other guests, including who is staying in a room or their dates of stay."
+        )
+        return {
+            "messages": [refusal],
+            "confidence": state.get("confidence", 100),
+            "last_active_agent": "compliance_checker",
+            "compliance_terminal": True,
+            "rag_artifact": [],
+        }
+
     messages = state["messages"]
     sys_msg = SystemMessage(content=COMPLIANCE_RAG_PROMPT_TEMPLATE.format(rules_text=rules_text))
     response = llm_with_rag_tools.invoke([sys_msg] + messages)
-    return {"messages": [response], "confidence": state.get("confidence", 100), "last_active_agent": "compliance_checker"}
+    return {
+        "messages": [response],
+        "confidence": state.get("confidence", 100),
+        "last_active_agent": "compliance_checker",
+        "compliance_terminal": False,
+    }
 
 
 def compliance_generate_node(state: AppState, llm, rules_text: str) -> AppState:
@@ -58,5 +76,6 @@ def compliance_generate_node(state: AppState, llm, rules_text: str) -> AppState:
         "confidence": state.get("confidence", 100),
         "rag_artifact": state.get("rag_artifact"),
         "last_active_agent": "retriever",
+        "compliance_terminal": True,
     }
 

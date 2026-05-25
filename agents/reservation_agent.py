@@ -22,6 +22,14 @@ from utils.prompts import BOOKING_RESPONSE_PROMPT
 from workflows.state import AppState
 
 _ROOM_NUMBER_RE = re.compile(r"\b(?:room\s*#?\s*)?(\d{3})\b", re.IGNORECASE)
+_NEW_BOOKING_INTENTS = {
+    "book",
+    "check_availability",
+    "list_room_types",
+    "provide_guest_name",
+    "change_dates",
+    "change_room_type",
+}
 
 
 def _latest_human_text(messages) -> str:
@@ -64,6 +72,80 @@ def _merge_context(
         return {}
 
     return ctx
+
+
+def _normalize_booking_store(raw: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(raw or {})
+    if "active_booking" in raw or "completed_bookings" in raw:
+        return {
+            "active_booking": dict(raw.get("active_booking") or {}),
+            "completed_bookings": list(raw.get("completed_bookings") or []),
+        }
+
+    legacy = dict(raw)
+    completed = []
+    if legacy.get("pending_step") == "confirmed" and legacy.get("last_reservation_id") is not None:
+        completed.append(
+            {
+                "reservation_id": legacy.get("last_reservation_id"),
+                "guest_name": legacy.get("guest_name"),
+                "room_number": legacy.get("room_number"),
+                "room_type": legacy.get("room_type"),
+                "start_date": legacy.get("start_date"),
+                "end_date": legacy.get("end_date"),
+            }
+        )
+    return {"active_booking": legacy, "completed_bookings": completed}
+
+
+def _booking_summary(ctx: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "reservation_id": ctx.get("last_reservation_id"),
+        "guest_name": ctx.get("guest_name"),
+        "room_number": ctx.get("room_number"),
+        "room_type": ctx.get("room_type"),
+        "start_date": ctx.get("start_date"),
+        "end_date": ctx.get("end_date"),
+    }
+
+
+def _should_start_new_booking(store: dict[str, Any], extracted: BookingExtraction) -> bool:
+    active = dict(store.get("active_booking") or {})
+    if not active:
+        return False
+
+    if extracted.booking_scope == "start_new":
+        return True
+
+    if extracted.intent == "cancel_booking_intent":
+        return True
+
+    active_status = active.get("pending_step")
+    if active_status == "confirmed" and extracted.intent in _NEW_BOOKING_INTENTS:
+        return extracted.booking_scope != "continue_current"
+
+    return False
+
+
+def _update_booking_store(
+    store: dict[str, Any],
+    ctx: dict[str, Any],
+    facts: dict[str, Any],
+) -> dict[str, Any]:
+    updated = {
+        "active_booking": dict(ctx or {}),
+        "completed_bookings": list(store.get("completed_bookings") or []),
+    }
+
+    if facts.get("booking_confirmed"):
+        summary = _booking_summary(ctx)
+        reservation_id = summary.get("reservation_id")
+        if reservation_id is not None and not any(
+            item.get("reservation_id") == reservation_id for item in updated["completed_bookings"]
+        ):
+            updated["completed_bookings"].append(summary)
+
+    return updated
 
 
 def _parse_ctx_date(ctx: dict[str, Any], key: str) -> date | None:
@@ -289,16 +371,20 @@ def reservation_node(state: AppState, llm, db_path: Path) -> AppState:
     """
     messages = state["messages"]
     today = datetime.now().date()
-    prior_ctx = dict(state.get("booking_context") or {})
+    booking_store = _normalize_booking_store(state.get("booking_context"))
+    prior_ctx = dict(booking_store.get("active_booking") or {})
     canonical = list_room_types(db_path)
 
     extracted = extract_booking_fields(
         llm,
         messages,
-        booking_context=prior_ctx,
+        booking_context=booking_store,
         today=today,
         room_types=canonical,
     )
+
+    if _should_start_new_booking(booking_store, extracted):
+        prior_ctx = {}
 
     last_human = _latest_human_text(messages)
     if extracted.room_number is None and last_human:
@@ -313,11 +399,12 @@ def reservation_node(state: AppState, llm, db_path: Path) -> AppState:
             ctx["room_number"] = parsed_room
     ctx, facts = _run_booking_logic(db_path, ctx, extracted, today)
     response = _render_response(llm, facts)
+    updated_store = _update_booking_store(booking_store, ctx, facts)
 
     return {
         "messages": [response],
         "confidence": state.get("confidence", 100),
         "last_active_agent": "reservation_assistant",
-        "booking_context": ctx,
+        "booking_context": updated_store,
         "sql_artifact": facts,
     }

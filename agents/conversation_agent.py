@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from langchain_core.messages import AIMessage, SystemMessage
+from pydantic import BaseModel, Field
 
 from utils.prompts import CONVERSATION_COORDINATOR_PROMPT
 from workflows.state import AppState
+
+
+class RouteDecision(BaseModel):
+    route: Literal[
+        "direct_response",
+        "reservation_assistant",
+        "compliance_checker",
+        "web_search_assistant",
+    ]
+    reason: str = Field(default="general_info")
+    reply: str = Field(default="")
+    route_confidence: int = Field(default=90, ge=0, le=100)
 
 
 def conversation_node(state: AppState, llm) -> AppState:
@@ -33,14 +48,26 @@ def conversation_node(state: AppState, llm) -> AppState:
             content="You are extremely unsure. Please apologize for that and ask the user to repeat everything."
         )
         response = llm.invoke([SystemMessage(content=CONVERSATION_COORDINATOR_PROMPT)] + messages + [apology])
-        return {"messages": [response], "confidence": confidence, "last_active_agent": "conv_assistant"}
+        return {
+            "messages": [response],
+            "confidence": confidence,
+            "last_active_agent": "conv_assistant",
+            "route_decision": {
+                "route": "direct_response",
+                "reason": "low_understanding_confidence",
+                "reply": str(response.content),
+                "route_confidence": confidence,
+            },
+        }
 
-    response = llm.invoke([SystemMessage(content=CONVERSATION_COORDINATOR_PROMPT)] + messages)
-    assistant_msg = AIMessage(content=response.content)
+    router = llm.with_structured_output(RouteDecision)
+    decision = router.invoke([SystemMessage(content=CONVERSATION_COORDINATOR_PROMPT)] + messages)
+    assistant_msg = AIMessage(content=decision.reply) if decision.route == "direct_response" else AIMessage(content="")
 
     return {
         "messages": [assistant_msg],
         "confidence": confidence,
         "last_active_agent": "conv_assistant",
+        "route_decision": decision.model_dump(),
     }
 

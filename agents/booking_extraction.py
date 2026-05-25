@@ -31,6 +31,15 @@ class BookingExtraction(BaseModel):
             "Use 'check_availability' when they ask what is free without committing to book yet."
         )
     )
+    booking_scope: Literal["continue_current", "start_new", "unclear"] = Field(
+        default="unclear",
+        description=(
+            "How this turn relates to reservation state. Use 'continue_current' when the guest is clearly "
+            "continuing the active unfinished booking. Use 'start_new' when they are initiating a separate "
+            "reservation, especially after an earlier booking was already confirmed. Use 'unclear' when "
+            "the relationship is ambiguous."
+        ),
+    )
     start_date: date | None = Field(
         default=None,
         description="Check-in date (inclusive), ISO YYYY-MM-DD. Null if not stated or inferable.",
@@ -61,18 +70,36 @@ class BookingExtraction(BaseModel):
 
 
 def _format_prior_context(booking_context: dict | None, today: str, room_types: list[str]) -> str:
-    ctx = booking_context or {}
+    store = booking_context or {}
+    if "active_booking" in store or "completed_bookings" in store:
+        active = store.get("active_booking") or {}
+        completed = store.get("completed_bookings") or []
+    else:
+        active = store
+        completed = []
+
     lines = [
         f"Today's date: {today}",
         f"Canonical room types in the hotel: {', '.join(room_types)}",
-        "Prior booking context accumulated from earlier turns:",
+        "Active booking draft accumulated from earlier turns:",
     ]
-    for key in ("start_date", "end_date", "room_type", "room_number", "guest_name", "pending_step"):
-        val = ctx.get(key)
+    for key in ("start_date", "end_date", "room_type", "room_number", "guest_name", "pending_step", "last_reservation_id"):
+        val = active.get(key)
         if val:
             lines.append(f"  - {key}: {val}")
     if len(lines) == 3:
         lines.append("  (none yet)")
+    if completed:
+        lines.append("Recently completed bookings in this chat:")
+        for item in completed[-3:]:
+            lines.append(
+                "  - "
+                f"reservation_id={item.get('reservation_id')}, "
+                f"guest_name={item.get('guest_name')}, "
+                f"room_number={item.get('room_number')}, "
+                f"start_date={item.get('start_date')}, "
+                f"end_date={item.get('end_date')}"
+            )
     return "\n".join(lines)
 
 

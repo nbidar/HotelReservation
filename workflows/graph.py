@@ -22,7 +22,7 @@ from rag.rules import DEFAULT_COMPLIANCE_RULES
 from rag.vectordb import ensure_compliance_collection
 from tools.search_tool import make_tavily_search_tool
 from utils.helpers import make_llm
-from workflows.routing import choose_error_recovery, choose_next_node
+from workflows.routing import choose_compliance_next_node, choose_error_recovery, choose_next_node
 from workflows.state import AppState
 
 
@@ -110,11 +110,11 @@ def build_graph(*, settings, logger):
 
     builder.add_conditional_edges(
         "compliance_checker",
-        tools_condition,
-        path_map={"tools": "rag_tools", "__end__": "conv_assistant"},
+        choose_compliance_next_node,
+        path_map={"rag_tools": "rag_tools", "__end__": "__end__"},
     )
     builder.add_edge("rag_tools", "retriever")
-    builder.add_edge("retriever", "conv_assistant")
+    builder.add_edge("retriever", "__end__")
 
     if search_tools:
         builder.add_conditional_edges(

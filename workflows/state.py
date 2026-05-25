@@ -28,3 +28,5 @@ class AppState(TypedDict, total=False):
     # Error handling
     error: Exception | None
     last_active_agent: str
+    route_decision: dict[str, Any]
+    compliance_terminal: bool

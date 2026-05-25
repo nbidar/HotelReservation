@@ -1,40 +1,10 @@
 from __future__ import annotations
 
-import re
 from typing import Literal
 
-from langchain_core.messages import HumanMessage
 from langgraph.errors import NodeInterrupt
 
 from workflows.state import AppState
-
-_BOOKING_RE = re.compile(
-    r"\b("
-    r"book(?:ing)?|reserve|reservation|availability|available|"
-    r"check[- ]?in|check[- ]?out|room\s*\d+|"
-    r"single|double|suite|deluxe|family suite|executive suite"
-    r")\b",
-    re.IGNORECASE,
-)
-_DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
-
-
-def _latest_human_text(messages) -> str:
-    for message in reversed(messages):
-        role = getattr(message, "type", None)
-        if role in ("human", "user") or isinstance(message, HumanMessage):
-            content = (getattr(message, "content", None) or "").strip()
-            if content:
-                return content
-    return ""
-
-
-def _is_reservation_intent(text: str) -> bool:
-    if not text:
-        return False
-    if _BOOKING_RE.search(text):
-        return True
-    return bool(_DATE_RE.search(text))
 
 
 def choose_next_node(state: AppState) -> Literal[
@@ -46,29 +16,39 @@ def choose_next_node(state: AppState) -> Literal[
 ]:
     last_message = state["messages"][-1]
     content = getattr(last_message, "content", "") or ""
+    decision = state.get("route_decision") or {}
+    route = decision.get("route")
 
     if "error" in content:
         return "error_handler"
 
-    if ("reservation_assistant" in content) or ("reservation assistant" in content):
-        return "reservation_assistant"
-
-    if ("compliance_checker" in content) or ("compliance checker" in content):
+    if route == "compliance_checker":
         return "compliance_checker"
 
-    if ("web_search" in content) or ("web search" in content):
-        return "web_search_assistant"
-
-    # Fallback: route booking intent even if the coordinator replied in prose.
-    if _is_reservation_intent(_latest_human_text(state["messages"])):
+    if route == "reservation_assistant":
         return "reservation_assistant"
 
-    # Ported policy interruption (in-notebook behavior)
+    if route == "web_search_assistant":
+        return "web_search_assistant"
+
+    if route == "direct_response":
+        return "__end__"
+
+    # Keep a narrow safety net if the coordinator produces a harmful direct reply.
     if any(k in content.lower() for k in ("violate", "concern", "illegal", "manipultion")):
         raise NodeInterrupt(
             "Warning! The user request violates our policies. The conversation is forwarded to a human assistant for investigation."
         )
 
+    return "__end__"
+
+
+def choose_compliance_next_node(state: AppState) -> Literal["rag_tools", "__end__"]:
+    last_message = state["messages"][-1]
+    if state.get("compliance_terminal"):
+        return "__end__"
+    if getattr(last_message, "tool_calls", None):
+        return "rag_tools"
     return "__end__"
 
 
@@ -85,4 +65,3 @@ def choose_error_recovery(state: AppState) -> Literal[
     if isinstance(err, RetrievalException):
         return "degraded_functionality_retrieval"
     return "human_intervention"
-
